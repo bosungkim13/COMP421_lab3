@@ -10,11 +10,14 @@
 #
 
 #
-#	Define the list of user test programs you also want to be made
-#	by this Makefile.  For example, the definition below specifies
-#	to make Yalnix test user programs test1, test2, and test3, all
-#	of which will be linked with your library to enable them to use
-#	your server.  You should modify this list to the list of your
+#	Define the list of everything to be made by this Makefile.
+#	The list should include "yfs" (the name of your server) and
+#	"iolib.a" (the name of your library), plus the list of user
+#	test programs you also want to be made by this Makefile.
+#	For example, the definition below specifies to make Yalnix
+#	test user programs test1, test2, and test3, all of which will
+#	be linked with your library to enable them to use your
+#	server.  You should modify this list to the list of your
 #	own test programs.
 #
 #	For each user test program, the Makefile will make the
@@ -24,16 +27,7 @@
 #	For example, the Makefile will make test1 out of test1.c,
 #	if you have a file named test1.c in this directory.
 #
-TEST = sample1 sample2 tcreate tcreate2 tlink tls topen topen2 tsymlink tunlink2 writeread test1 test2 overloadTest
-
-#
-#	Define the list of everything to be made by this Makefile.
-#	The list should include "yfs" (the name of your server) and
-#	"iolib.a" (the name of your library).  This should also 
-#	include $(TEST) so that all of your user test programs
-#	(defined above) are also made by this Makefile.
-#
-ALL = yfs iolib.a $(TEST)
+ALL = yfs iolib.a tests/cannonTest1 tests/cannonTest2 tests/cannonTest3 tests/cannonTest4 tests/cannonTest5 tests/sample1 tests/sample2
 
 #
 #	You must modify the YFS_OBJS and YFS_SRCS definitions below.
@@ -41,8 +35,8 @@ ALL = yfs iolib.a $(TEST)
 #	YFS server, and YFS_SRCS should  be a list of the corresponding
 #	source files that make up your serever.
 #
-YFS_OBJS = yfs.o hashTable.o message.o
-YFS_SRCS = yfs.c hashTable.c message.c
+YFS_OBJS = yfs.o cache.o
+YFS_SRCS = yfs.c cache.c
 
 #
 #	You must also modify the IOLIB_OBJS and IOLIB_SRCS definitions
@@ -64,7 +58,7 @@ LANG = gcc
 PUBLIC_DIR = /clear/courses/comp421/pub
 
 CPPFLAGS = -I$(PUBLIC_DIR)/include
-CFLAGS = -g -Wall -Wextra -Werror -Wno-unused-parameter
+CFLAGS = -g -Wall
 
 %: %.o
 	$(LINK.o) -o $@ $^ iolib.a $(LOADLIBES) $(LDLIBS)
@@ -84,8 +78,6 @@ iolib.a: $(IOLIB_OBJS)
 	rm -f $@
 	ar rv $@ $(IOLIB_OBJS)
 	ranlib $@
-
-$(TEST): iolib.a
 
 mkyfs: mkyfs.c
 	$(CC) $(CPPFLAGS) -o mkyfs mkyfs.c

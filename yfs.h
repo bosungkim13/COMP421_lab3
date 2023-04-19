@@ -1,56 +1,52 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 #include <stdbool.h>
+
+#include <comp421/yalnix.h>
+#include <comp421/hardware.h>
+#include <comp421/filesystem.h>
 #include <comp421/iolib.h>
 
-#define INODESPERBLOCK (BLOCKSIZE / INODESIZE)
-#define CREATE_NEW -1
+#define FILE_SYSTEM 1
 
-typedef struct freeInode freeInode;
-typedef struct freeBlock freeBlock;
-typedef struct cacheItem cacheItem;
-typedef struct queue queue;
+#define MESSAGE_SIZE 32
 
-struct cacheItem {
-    int number;
-    bool dirty;
-    void *addr;
-    cacheItem *prevItem;
-    cacheItem *nextItem;
-};
+#define YFS_OPEN 1
+#define YFS_CLOSE 2
+#define YFS_CREATE 3
+#define YFS_READ 4
+#define YFS_WRITE 5
+#define YFS_SEEK 6
+#define YFS_LINK 7
+#define YFS_UNLINK 8
+#define YFS_SYMLINK 9
+#define YFS_READLINK 10
+#define YFS_MKDIR 11
+#define YFS_RMDIR 12
+#define YFS_CHDIR 13
+#define YFS_STAT 14
+#define YFS_SYNC 15
+#define YFS_SHUTDOWN 16
 
-struct freeInode {
-    int inodeNumber;
-    freeInode *next;
-};
+#define FREE 0
+#define OCCUPIED 1
 
-struct freeBlock {
-    int blockNumber;
-    freeBlock *next;
-};
-
-struct queue {
-    cacheItem *firstItem;
-    cacheItem *lastItem;
-};
-
-void *getBlock(int blockNumber);
-void destroyCacheItem(cacheItem *item);
-struct inode* getInode(int inodeNum);
-void addFreeInodeToList(int inodeNum);
-void buildFreeInodeAndBlockLists();
-int getNextFreeBlockNum();
-int getDirectoryEntry(char *pathname, int inodeStartNumber, int *blockNumPtr, bool createIfNeeded);
-int yfsCreate(char *pathname, int currentInode, int inodeNumToSet);
-int yfsOpen(char *pathname, int currentInode);
-int yfsRead(int inodeNum, void *buf, int size, int byteOffset, int pid);
-int yfsWrite(int inodeNum, void *buf, int size, int byteOffset, int pid);
-int yfsLink(char *oldName, char *newName, int currentInode);
-int yfsUnlink(char *pathname, int currentInode);
-int yfsSymLink(char *oldname, char *newname, int currentInode);
-int yfsReadLink(char *pathname, char *buf, int len, int currentInode, int pid);
-int yfsMkDir(char *pathname, int currentInode);
-int yfsRmDir(char *pathname, int currentInode);
-int yfsChDir(char *pathname, int currentInode);
-int yfsStat(char *pathname, int currentInode, struct Stat *statbuf, int pid);
-int yfsSync(void);
-int yfsShutdown(void);
-int yfsSeek(int inodeNum, int offset, int whence, int currentPosition);
+void initFreeLists();
+int _ysfOpen(char *pathname, short currDir);
+int _ysfCreate(char *pathname, short currDir);
+int _ysfRead(void *buf, int size, short inode, int position);
+int _ysfWrite(void *buf, int size, short inode, int position);
+int _ysfSeek(short inode);
+int _ysfLink(char *oldName, char *newName, short currDir);
+int _ysfUnlink(char *pathname, short currDir);
+int _ysfSymLink(char *oldName, char *newName, short currDir);
+int _ysfReadLink(char *pathname, char *buf, int len, short currDir);
+int _ysfMkDir(char *pathname, short currDir);
+int _ysfRmDir(char *pathname, short currDir);
+int _ysfChDir(char *pathname, short currDir);
+int _ysfStat(char *pathname, struct Stat* statbuf, short currDir);
+int _ysfSync(void);
+int _ysfShutdown(void);
+int processMessage(char* message, int pid);

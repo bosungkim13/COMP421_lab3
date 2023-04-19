@@ -1,456 +1,466 @@
-//#include <string.h>
-#include <stdlib.h>
-#include <comp421/iolib.h>
-#include <comp421/filesystem.h>
+#include "yfs.h"
+#include "cache.h"
 #include <comp421/yalnix.h>
-#include "message.h"
+#include <comp421/hardware.h>
+#include <comp421/filesystem.h>
+#include <comp421/iolib.h>
 
-struct open_file {
-    int inodenum;
+struct openFile {
+    short inode;
     int position;
 };
-struct open_file * file_table[MAX_OPEN_FILES] = {NULL};
-int files_open = 0;
-int current_inode = ROOTINODE;
 
-struct open_file * getFile(int fd);
+struct openFile files[MAX_OPEN_FILES];
 
-static int
-getLenForPath(char *pathname)
-{
-    if (pathname == NULL) {
-        return ERROR;
-    }
+int numOpenFiles = 0;
+int isFilesInit = 0;
+short currDir = ROOTINODE;
+
+void initFiles() {
+    TracePrintf(1, "iolib: initFiles - initalizing files array\n");
     int i;
-    for (i = 0; i < MAXPATHNAMELEN; i++) {
-        if (pathname[i] == '\0') {
+    for(i = 0; i < MAX_OPEN_FILES; i++) {
+        files[i].inode = -1;
+        files[i].position = 0;
+    }
+    isFilesInit = 1;
+}
+
+
+int parsePathname(char* oldName, char* newName) {
+    TracePrintf(3, "cache: parsePathname - about to parse %s\n", oldName);
+    int len = strlen(oldName);
+    int i = 0; 
+    int j = 0;
+
+    for(i = 0; i < len; i++) {
+        //get rid of consecutive slashes
+        if(oldName[i] == '/' && oldName[i+1] == '/') {
+            continue;
+        }
+        newName[j] = oldName[i];
+        j++;
+    }
+    int newlen = j;
+    //change last character from slash to period if needed
+    if(newName[newlen-1] == '/') {
+        newName[newlen] = '.';
+        newName[newlen+1] = '\0';
+        newlen++;
+    } else{
+        newName[newlen] = '\0';
+    }
+    //return length of pathname
+    return newlen;
+}
+
+int sendYFS(uint8_t code, void** args, int* argSizes, int numArgs) {
+    char message[MESSAGE_SIZE];
+    message[0] = (char)code;
+    int i;
+    int offset = 1;
+    for(i = 0; i < numArgs; i++) {
+        if(*(void**)args[i] == NULL && argSizes[i] == sizeof(void*)) {
+            TracePrintf(1, "iolib: sendYFS - invalid argument... null pointer\n");
+            return ERROR;
+	    }
+        memcpy(message + offset, (char**)(args[i]), argSizes[i]);
+        offset += argSizes[i];
+    }
+    // result should contain the integer that is the message reply value
+    int success = Send(message, - FILE_SYSTEM);
+    int res = *(int*)message;
+    if(success == -1 || res == -1) {
+        switch(code) {
+            case YFS_OPEN:
+                printf("iolib: Yalnix File System failed to open file\n"); 
+                break;
+            case YFS_CLOSE:
+                printf("iolib: Yalnix File System failed to close file\n"); 
+                break;
+            case YFS_CREATE:
+                printf("iolib: Yalnix File System failed to create file\n"); 
+                break;
+            case YFS_READ:
+                printf("iolib: Yalnix File System failed to read file\n"); 
+                break;
+            case YFS_WRITE:
+                printf("iolib: Yalnix File System failed to write to file\n"); 
+                break;
+            case YFS_SEEK:
+                printf("iolib: Yalnix File System failed to seek file\n"); 
+                break;
+            case YFS_LINK:
+                printf("iolib: Yalnix File System failed to create link\n"); 
+                break;
+            case YFS_UNLINK:
+                printf("iolib: Yalnix File System failed to unlink\n"); 
+                break;
+            case YFS_SYMLINK:
+                printf("iolib: Yalnix File System failed to create symbolic link\n"); 
+                break;
+            case YFS_READLINK:
+                printf("iolib: Yalnix File System failed to read link\n"); 
+                break;
+            case YFS_MKDIR:
+                printf("iolib: Yalnix File System failed to make directory\n"); 
+                break;
+            case YFS_RMDIR:
+                printf("iolib: Yalnix File System failed to remove directory\n"); 
+                break;
+            case YFS_CHDIR:
+                printf("iolib: Yalnix File System failed to change directory\n"); 
+                break;
+            case YFS_STAT:
+                printf("iolib: Yalnix File System failed to get stats\n"); 
+                break;
+            case YFS_SYNC:
+                printf("iolib: Yalnix File System failed to sync storage\n"); 
+                break;
+            case YFS_SHUTDOWN:
+                printf("iolib: Yalnix File System failed to shutdown\n"); 
+                break;
+        }
+    }
+    return res;
+}
+
+int Open(char* pathname) {
+    TracePrintf(1, "iolib: Open - Opening %s\n", pathname);
+    if (!isFilesInit){
+        initFiles();
+    }
+    if (numOpenFiles >= MAX_OPEN_FILES) {
+        printf("iolib: Maximum count of files already open!\n");
+        return 0;
+    }
+
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    int argSizes[3] = {sizeof(pathname), sizeof(pathSize), sizeof(currDir)};
+    void* args[3] = {(void*)&pathname, (void*)&pathSize, (void*)&currDir};
+    int inode = sendYFS(YFS_OPEN, args, argSizes, 3);
+
+    int i;
+    // free resources
+    free(pathname);
+    // look for available inode
+    for(i = 0; i < MAX_OPEN_FILES; i++) {
+        if(files[i].inode == -1) {
+            files[i].inode = inode;
+            numOpenFiles++;
+            return i;
+        }
+    }
+    return ERROR;
+}
+
+int Close(int fd) {
+    TracePrintf(1, "iolib: Close - Closing file descriptor %d\n", fd);
+    if (!isFilesInit){
+        initFiles();
+    }
+    if(fd >= MAX_OPEN_FILES|| fd < 0 || files[fd].inode == -1) {
+        TracePrintf(1, "iolib: Close - File descriptor %d is invalid\n", fd);
+        printf("iolib: Invalid file descriptor!\n");
+        return ERROR;
+    }
+    // reset inode
+    files[fd].inode = -1;
+    files[fd].position = 0;
+    numOpenFiles--;
+    return 0;
+}
+
+int Create(char *pathname) {
+    TracePrintf(1, "iolib: Create - Creating file with path %s\n", pathname);
+    if(!isFilesInit){
+        initFiles();
+    }
+    if(MAX_OPEN_FILES <= numOpenFiles) {
+        TracePrintf(1, "iolib: Create - Maximum number of files already open\n");
+        printf("iolib: Maximum number of files already open. Cannot open more files!\n");
+        return 0;
+    }
+
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    int argSizes[3] = {sizeof(pathname), sizeof(pathSize), sizeof(currDir)};
+    void* args[3] = {(void*)&pathname, (void*)&pathSize, (void*)&currDir};
+    int inode = sendYFS(YFS_CREATE, args, argSizes, 3);
+
+    // free resources
+    free(pathname);
+
+    int i;
+    for(i = 0; i < MAX_OPEN_FILES; i++) {
+        // check for first unoccupied inode
+        if(files[i].inode == -1) {
+            files[i].inode = inode;
+            numOpenFiles++;
+            TracePrintf(1, "iolib: Create - Succesfully created file with path %s\n", pathname);
+            return i;
+        }
+    }
+    return ERROR;
+}
+
+int Read(int fd, void *buf, int size) {
+    TracePrintf(1, "iolib: Read - Creating from file descriptor %d\n", fd);
+    if(!isFilesInit){
+        initFiles();
+    }
+	
+    if(fd >= MAX_OPEN_FILES || fd < 0 || files[fd].inode == -1) {
+        TracePrintf(1, "iolib: Read - Invalid file descriptor\n");
+        printf("iolib: Invalid file descriptor\n");
+        return ERROR;
+    }
+    int position = files[fd].position;
+    short inode = files[fd].inode;
+    int argSizes[4] = {sizeof(buf), sizeof(size), sizeof(inode), sizeof(position)};
+    void* args[4] = {(void*)&buf, (void*)&size, (void*)&inode, (void*)&position};
+    int result = sendYFS(YFS_READ, args, argSizes, 4);
+    if(result == -1){
+        return ERROR;
+    }
+	// update file position
+    files[fd].position += result;
+    
+    return result;
+}
+
+int Write(int fd, void *buf, int size) {
+    TracePrintf(1, "iolib: Write - Writing to file descriptor %d\n", fd);
+    if(!isFilesInit) {
+        initFiles();
+    }
+	
+    if(fd < 0 || fd >= MAX_OPEN_FILES || files[fd].inode == -1) {
+        TracePrintf(1, "iolib: Write - Writing to file descriptor %d\n", fd);
+        printf("iolib: Invalid file descriptor\n");
+        return ERROR;
+    }
+
+    short inode = files[fd].inode;
+    int position = files[fd].position;
+    int argSizes[4] = {sizeof(buf), sizeof(size), sizeof(inode), sizeof(position)};
+    void* args[4] = {(void*)&buf, (void*)&size, (void*)&inode, (void*)&position};
+    int res = sendYFS(YFS_WRITE, args, argSizes, 4);
+
+    if(res == -1){
+        TracePrintf(1, "iolib: write - Failed to write to file descriptor %d\n", fd);
+        return ERROR;
+    }
+
+    files[fd].position += res;
+    TracePrintf(1, "iolib: Write - Finished writing to file descriptor %d\n", fd);
+    return res;
+}
+
+int Seek(int fd, int offset, int whence) {
+    TracePrintf(1, "iolib: Seek - Start seeking on file descriptor %d with offset %d and whence %d\n", fd, offset, whence);
+
+    if(fd < 0 || fd >= MAX_OPEN_FILES || files[fd].inode == -1) {
+        TracePrintf(1, "iolib: Seek - Invalid file descriptor\n");
+        printf("iolib: Invalid file descriptor\n");
+        return ERROR;
+    }
+    if(!isFilesInit){
+        initFiles();
+    }
+
+    int updatedPosition;
+
+    switch(whence) {
+        case SEEK_SET:
+            updatedPosition = offset;
             break;
-        }
-    }
-    if (i == 0 || i == MAXPATHNAMELEN) {
-        TracePrintf(1, "invalid pathname\n");
-        return ERROR;
-    }
-    return i + 1;
-}
-
-static int
-addFile(int inodenum)
-{
-    int fd;
-    for (fd = 0; fd < MAX_OPEN_FILES; fd++) {
-        if (file_table[fd] == NULL) {
+        case SEEK_CUR:
+            updatedPosition = files[fd].position + offset;
             break;
-        }
+        case SEEK_END:
+        ;
+            void* args[1] = {(void*)&files[fd].inode};
+            int argSizes[1] = {sizeof(files[fd].inode)};
+            updatedPosition = sendYFS(YFS_SEEK, args, argSizes, 1) - offset;
+            break;
+        default:
+            TracePrintf(1, "iolib: Seek - whence value of %d is invalid\n", whence);
+            printf("iolib: whence value invalid\n");
     }
-    if (fd == MAX_OPEN_FILES) {
-        TracePrintf(1, "file table full\n");
-        return ERROR;
-    }
-    file_table[fd] = malloc(sizeof (struct open_file));
-    if (file_table[fd] == NULL) {
-        TracePrintf(1, "error allocating space for open file\n");
-    }
-    file_table[fd]->inodenum = inodenum;
-    file_table[fd]->position = 0;
-    return fd;
-}
 
-static int
-removeFile(int fd)
-{
-    struct open_file * file = getFile(fd);
-    if (file == NULL) {
+    if(updatedPosition < 0) {
+        TracePrintf(1, "iolib: Seek - Updated file position would be negative with value of %d\n", updatedPosition);
         return ERROR;
     }
-    free(file);
-    file_table[fd] = NULL;
+
+    files[fd].position = updatedPosition;
+    TracePrintf(1, "iolib: Seek - Seek Completed\n");
     return 0;
 }
 
-struct open_file *
-getFile(int fd)
-{
-    if (fd < 0 || fd >= MAX_OPEN_FILES) 
-    {
-        return NULL;
+int Link(char *oldName, char *newName) {
+    TracePrintf(1, "iolib: Link - Attempting to link %s to %s\n", oldName, newName);
+    char* tempStr1 = oldName;
+    oldName = (char*)malloc(strlen(oldName) + 2);
+    int oldSize = parsePathname(tempStr1, oldName);
+    char* tempStr2 = newName;
+    newName = (char*)malloc(strlen(newName) + 2);
+    int newSize = parsePathname(tempStr2, newName);
+
+    int argSizes[5] = {sizeof(oldName), sizeof(oldSize), sizeof(newName), sizeof(newSize), sizeof(currDir)}; 
+    void* args[5] = {(void*)&oldName, (void*)&oldSize, (void*)&newName, (void*)&newSize, (void*)&currDir};
+    int res = sendYFS(YFS_LINK, args, argSizes, 5);
+    // free resources
+    free(oldName);
+    free(newName);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: Link - Send to yfs failed\n");
+        return ERROR;
     }
-    return file_table[fd];
+    TracePrintf(1, "iolib: Link - Sucessfully completed link\n");
+    return res;
 }
 
-static int
-sendPathMessage(int operation, char *pathname)
-{
-    int len = getLenForPath(pathname);
-    if (len == ERROR) {
+int Unlink(char *pathname) {
+    TracePrintf(1, "iolib: Unlink - Attempting to unlink %s\n", pathname);
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    int argSizes[3] = {sizeof(pathname), sizeof(pathSize), sizeof(currDir)};
+    void* args[3] = {(void*)&pathname, (void*)&pathSize, (void*)&currDir};
+    int res = sendYFS(YFS_UNLINK, args, argSizes, 3);
+    // free resources
+    free(pathname);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: Unlink - Send to yfs failed\n");
         return ERROR;
     }
-    struct message_path * msg = malloc(sizeof(struct message_path));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for path message\n");
-        return ERROR;
-    }
-    msg->num = operation;
-    msg->current_inode = current_inode;
-    msg->pathname = pathname;
-    msg->len = len;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        TracePrintf(1, "error sending message to server\n");
-        free(msg);
-        return ERROR;
-    }
-    // msg gets overwritten with reply message after return from Send
-    int code = msg->num;
-    free(msg);
-    return code;
+    TracePrintf(1, "iolib: Unlink - Done with unlink\n");
+    return res;
 }
+	
+int SymLink(char *oldName, char *newName) {
+    TracePrintf(1, "iolib: SymLink - Attempting to symlink %s to %s\n", oldName, newName);
+    char* tempStr1 = oldName;
+    oldName = (char*)malloc(strlen(oldName) + 2);
+    int oldSize = parsePathname(tempStr1, oldName);
+    char* tempStr2 = newName;
+    newName = (char*)malloc(strlen(newName) + 2);
+    int newSize = parsePathname(tempStr2, newName);
+    int argSizes[5] = {sizeof(oldName), sizeof(oldSize), sizeof(newName), sizeof(newSize), sizeof(currDir)};
+    void* args[5] = {(void*)&oldName, (void*)&oldSize, (void*)&newName, (void*)&newSize, (void*)&currDir};
+    int res = sendYFS(YFS_SYMLINK, args, argSizes, 5);
 
-static int
-sendFileMessage(int operation, int inodenum, void *buf, int size, int offset)
-{
-    if (size < 0 || buf == NULL) {
+    // free resources
+    free(oldName);
+    free(newName);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: SymLink - Send to yfs failed\n");
         return ERROR;
     }
-    struct message_file * msg = malloc(sizeof(struct message_file));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for file message\n");
-        return ERROR;
-    }
-    msg->num = operation;
-    msg->inodenum = inodenum;
-    msg->buf = buf;
-    msg->size = size;
-    msg->offset = offset;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        TracePrintf(1, "error sending message to server\n");
-        free(msg);
-        return ERROR;
-    }
-    int code = msg->num;
-    free(msg);
-    return code;
-}
-
-static int
-sendLinkMessage(int operation, char *oldname, char *newname)
-{
-    int oldlen = getLenForPath(oldname);
-    if (oldlen == ERROR) {
-        return ERROR;
-    }
-    int newlen = getLenForPath(newname);
-    if (newlen == ERROR) {
-        return ERROR;
-    }
-    struct message_link * msg = malloc(sizeof(struct message_link));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for path message\n");
-        return ERROR;
-    }
-    msg->num = operation;
-    msg->current_inode = current_inode;
-    msg->old_name = oldname;
-    msg->new_name = newname;
-    msg->old_len = oldlen;
-    msg->new_len = newlen;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        TracePrintf(1, "error sending message to server\n");
-        free(msg);
-        return ERROR;
-    }
-    // msg gets overwritten with reply message after return from Send
-    int code = msg->num;
-    free(msg);
-    return code;
-}
-
-static int
-sendReadLinkMessage(char *pathname, char *buf, int len)
-{
-    if (buf == NULL || len < 0) {
-        return ERROR;
-    }
-    int path_len = getLenForPath(pathname);
-    if (path_len == ERROR) {
-        return ERROR;
-    }
-    struct message_read_link * msg = malloc(sizeof(struct message_read_link));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for read link message\n");
-        return ERROR;
-    }
-    msg->num = YFS_READLINK;
-    msg->current_inode = current_inode;
-    msg->pathname = pathname;
-    msg->path_len = path_len;
-    msg->buf = buf;
-    msg->len = len;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        TracePrintf(1, "error sending message to server\n");
-        free(msg);
-        return ERROR;
-    }
-    // msg gets overwritten with reply message after return from Send
-    int code = msg->num;
-    free(msg);
-    return code;
-}
-
-static int
-sendSeekMessage(int inodenum, int current_position, int offset, int whence)
-{
-    if (inodenum <= 0) {
-        return ERROR;
-    }
-    struct message_seek * msg = malloc(sizeof(struct message_seek));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for seek message\n");
-        return ERROR;
-    }
-    msg->num = YFS_SEEK;
-    msg->inodenum = inodenum;
-    msg->current_position = current_position;
-    msg->offset = offset;
-    msg->whence = whence;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        TracePrintf(1, "error sending message to server\n");
-        free(msg);
-        return ERROR;
-    }
-    int code = msg->num;
-    free(msg);
-    return code;
-}
-
-static int
-sendStatMessage(char *pathname, struct Stat *statbuf)
-{
-    if (statbuf == NULL) {
-        return ERROR;
-    }
-    int len = getLenForPath(pathname);
-    if (len == ERROR) {
-        return ERROR;
-    }
-    struct message_stat * msg = malloc(sizeof(struct message_stat));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for path message\n");
-        return ERROR;
-    }
-    msg->num = YFS_STAT;
-    msg->current_inode = current_inode;
-    msg->pathname = pathname;
-    msg->len = len;
-    msg->statbuf = statbuf;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        TracePrintf(1, "error sending message to server\n");
-        free(msg);
-        return ERROR;
-    }
-    // msg gets overwritten with reply message after return from Send
-    int code = msg->num;
-    free(msg);
-    return code;
-}
-
-static int
-sendGenericMessage(int operation) {
-    struct message_generic * msg = malloc(sizeof(struct message_generic));
-    if (msg == NULL) {
-        TracePrintf(1, "error allocating space for path message\n");
-        return ERROR;
-    }
-    msg->num = operation;
-    if (Send(msg, -FILE_SERVER) != 0) {
-        if (operation != YFS_SHUTDOWN) {
-            TracePrintf(1, "error sending message to server\n");
-        }
-        free(msg);
-        return ERROR;
-    }
-    // msg gets overwritten with reply message after return from Send
-    int code = msg->num;
-    free(msg);
-    return code;
-}
-
-int
-Open(char *pathname)
-{
-    int inodenum = sendPathMessage(YFS_OPEN, pathname);
-    if (inodenum == ERROR) {
-        TracePrintf(1, "received error from server\n");
-        return ERROR;
-    }
-    // try to add a file to the array and return fd or error
-    TracePrintf(2, "inode num %d\n", inodenum);
-    return addFile(inodenum);
-}
-
-int
-Close(int fd)
-{
-    return removeFile(fd);
-}
-
-int
-Create(char *pathname)
-{
-    int inodenum = sendPathMessage(YFS_CREATE, pathname);
-    if (inodenum == ERROR) {
-        TracePrintf(1, "received error from server\n");
-        return ERROR;
-    }
-    // try to add a file to the array and return fd or error
-    TracePrintf(2, "inode num %d\n", inodenum);
-    return addFile(inodenum);
-}
-
-int
-Read(int fd, void *buf, int size)
-{
-    struct open_file * file = getFile(fd);
-    if (file == NULL) {
-        return ERROR;
-    }
-    int bytes = sendFileMessage(YFS_READ, file->inodenum, buf, size, file->position);
-    if (bytes == ERROR) {
-        TracePrintf(1, "received error from server\n");
-        return ERROR;
-    }
-    file->position += bytes;
-    return bytes;
-}
-
-int
-Write(int fd, void *buf, int size)
-{
-    struct open_file * file = getFile(fd);
-    if (file == NULL) {
-        return ERROR;
-    }
-    int bytes = sendFileMessage(YFS_WRITE, file->inodenum, buf, size, file->position);
-    if (bytes == ERROR) {
-        TracePrintf(1, "received error from server\n");
-        return ERROR;
-    }
-    file->position += bytes;
-    return bytes;
-}
-
-int
-Seek(int fd, int offset, int whence)
-{
-    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
-        return ERROR;
-    }
-    struct open_file * file = getFile(fd);
-    if (file == NULL) {
-        return ERROR;
-    }
-    int position = sendSeekMessage(file->inodenum, file->position, offset, whence);
-    if (position == ERROR) {
-        TracePrintf(1, "received error from server\n");
-        return ERROR;
-    }
-    return (file->position = position);
-}
-
-int
-Link(char *oldname, char *newname)
-{
-    int code = sendLinkMessage(YFS_LINK, oldname, newname);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
-    }
-    return code;
-}
-
-int
-Unlink(char *pathname)
-{
-    int code = sendPathMessage(YFS_UNLINK, pathname);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
-    }
-    return code;
-}
-
-int
-SymLink(char *oldname, char *newname)
-{
-    int code = sendLinkMessage(YFS_SYMLINK, oldname, newname);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
-    }
-    return code;
-}
-
-int
-ReadLink(char *pathname, char *buf, int len)
-{
-    int code = sendReadLinkMessage(pathname, buf, len);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
-    }
-    return code;
-}
-
-int
-MkDir(char *pathname)
-{
-    int code = sendPathMessage(YFS_MKDIR, pathname);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
-    }
-    return code;
-}
-
-int
-RmDir(char *pathname)
-{
-    int code = sendPathMessage(YFS_RMDIR, pathname);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
-    }
-    return code;
-}
-
-int
-ChDir(char *pathname)
-{
-    int inodenum = sendPathMessage(YFS_CHDIR, pathname);
-    if (inodenum == ERROR) {
-        TracePrintf(1, "received error from server\n");
-        return ERROR;
-    }
-    current_inode = inodenum;
+	TracePrintf(1, "iolib: SymLink - symlink complete\n");
     return 0;
 }
 
-int
-Stat(char *pathname, struct Stat *statbuf)
-{
-    int code = sendStatMessage(pathname, statbuf);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
+int ReadLink(char *pathname, char *buf, int len) {
+    TracePrintf(1, "iolib: ReadLink - Started with %s\n", pathname);
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    int argSizes[5] = {sizeof(pathname), sizeof(pathSize), sizeof(buf), sizeof(len), sizeof(currDir)};
+    void* args[5] = {(void*)&pathname, (void*)&pathSize, (void*)&buf, (void*)&len, (void*)&currDir};
+    int res = sendYFS(YFS_READLINK, args, argSizes, 5);
+
+    // free resources
+    free(pathname);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: ReadLink - Send to yfs failed\n");
+        return ERROR;
     }
-    return code;
+    TracePrintf(1, "iolib: ReadLink - readlink complete\n");
+    return res;
 }
 
-int
-Sync()
-{
-    int code = sendGenericMessage(YFS_SYNC);
-    if (code == ERROR) {
-        TracePrintf(1, "received error from server\n");
+int MkDir(char *pathname) {
+    TracePrintf(1, "iolib: MkDir - Making directory %s\n", pathname);
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    int argSizes[3] = {sizeof(pathname), sizeof(pathSize), sizeof(currDir)};
+    void* args[3] = {(void*)&pathname, (void*)&pathSize, (void*)&currDir};
+    int res = sendYFS(YFS_MKDIR, args, argSizes, 3);
+    free(pathname);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: MkDir - Send to yfs failed\n");
+        return ERROR;
     }
-    return code;
+    TracePrintf(1, "iolib: MkDir - Sucessfully created directory\n");
+    return res;
 }
 
-int
-Shutdown()
-{
-    sendGenericMessage(YFS_SHUTDOWN);
+int RmDir(char *pathname) {
+    TracePrintf(1, "iolib: RmDir - Attempting to remove %s\n", pathname);
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    int argSizes[2] = {sizeof(pathname), sizeof(pathSize)};
+    void* args[2] = {(void*)&pathname, (void*)&pathSize};
+    int res = sendYFS(YFS_RMDIR, args, argSizes, 2);
+    free(pathname);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: RmDir - Send to yfs failed\n");
+        return ERROR;
+    }
+    TracePrintf(1, "iolib: RmDir - Directory successfully removed\n");
+    return res;
+}
+
+int ChDir(char *pathname) {
+    TracePrintf(1, "iolib: ChDir - Changing current directory to %s\n", pathname);
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    void* args[3] = {(void*)&pathname, (void*)&pathSize, (void*)&currDir};
+    int argSizes[3] = {sizeof(pathname), sizeof(pathSize), sizeof(currDir)};
+    short new_inum = sendYFS(YFS_CHDIR, args, argSizes, 3);
+    free(pathname);
+    
+    if(new_inum == ERROR) {
+        TracePrintf(1, "iolib: ChDir - Couldn't retrieve directory\n");
+	    return ERROR;
+    }
+    currDir = new_inum;
+    TracePrintf(1, "iolib: ChDir - Successfully changed directory\n");
     return 0;
+}
+
+int Stat(char *pathname, struct Stat* statbuf) {
+    TracePrintf(1, "iolib: Stat - Starting to retrieve stats for %s\n", pathname);
+    char* tempStr = pathname;
+    pathname = (char*)malloc(strlen(pathname) + 2);
+    int pathSize = parsePathname(tempStr, pathname);
+    void* args[4] = {(void*)&pathname, (void*)&pathSize, (void*)&statbuf, (void*)&currDir};
+    int argSizes[4] = {sizeof(pathname), sizeof(pathSize), sizeof(statbuf), sizeof(currDir)};
+    int res = sendYFS(YFS_STAT, args, argSizes, 4);
+
+    // free resources
+    free(pathname);
+    if(res == ERROR){
+        TracePrintf(1, "iolib: Stat - Send to yfs failed\n");
+        return ERROR;
+    }
+    TracePrintf(1, "iolib: Stat - Sucessfully retrieved stats\n");
+    return res;
+}
+
+int Sync(void) {
+    return sendYFS(YFS_SYNC, NULL, NULL, 0);
+}
+
+int Shutdown(void) {
+    return sendYFS(YFS_SHUTDOWN, NULL, NULL, 0);
 }
