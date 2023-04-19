@@ -1,0 +1,8 @@
+Bo Sung Kim bk39
+
+Tested with provided provided and sample tests. Completed further testing
+with tests from https://github.com/cannontwo/Comp-421-Tests/tree/master/lab3/wcl2 and 
+has passed successfully. 
+
+I use a boolean array to keep track of free inodes and blocks. Further, I have
+separate caches, one for inodes and one for blocks. 
